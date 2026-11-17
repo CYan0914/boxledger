@@ -174,6 +174,33 @@ Manual verification path (about two minutes):
 
 ---
 
+## iOS build and TestFlight
+
+There is no committed `ios/` directory. The native project is generated on the
+runner by `npx expo prebuild`, then archived with manual signing:
+
+- Workflow: `.github/workflows/build.yml`
+- A push to `master` runs the tests and an unsigned simulator compile.
+- A manual dispatch with `create_ipa=true` runs the same tests, archives a
+  signed Release IPA, exports it, and uploads it to TestFlight with
+  `xcrun altool`.
+
+Signing inputs (GitHub repository secrets, never in git):
+
+| Secret | Value |
+| --- | --- |
+| `DIST_CERT_P12` | base64 of the distribution `.p12` |
+| `DIST_CERT_PASSWORD` | its password |
+| `DIST_PROFILE` | base64 of the App Store `.mobileprovision` |
+| `DIST_PROFILE_SPECIFIER` | the profile's name |
+| `APPSTORE_KEY_ID` / `APPSTORE_ISSUER_ID` / `APPSTORE_API_KEY` | App Store Connect API key |
+
+The App Store Connect app record itself cannot be created through the API;
+create it once in the web UI (My Apps → + → New App, name **BoxLedger**, bundle
+id `com.boxledger.app`, SKU `boxledger-ios-001`). Uploads fail until it exists.
+
+---
+
 ## Not built yet
 
 - **Payments.** The paywall and the paid flag exist; StoreKit / Play Billing
