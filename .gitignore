@@ -39,3 +39,7 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# local release credentials and browser QA artifacts
+/.ios-creds/
+/.gstack/

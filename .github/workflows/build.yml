@@ -1,0 +1,368 @@
+name: Build BoxLedger
+
+# Same shape as carryover's workflow: a cheap compile check on every push, and
+# a signed IPA → TestFlight run only when create_ipa is explicitly true. A plain
+# dispatch must not be able to upload a build by accident.
+#
+# This is an Expo project with no committed ios/ directory (Continuous Native
+# Generation), so the native project is generated on the runner with
+# `npx expo prebuild` before anything is archived. XcodeGen does not apply.
+
+on:
+  workflow_dispatch:
+    inputs:
+      create_ipa:
+        description: 'Archive a signed IPA and upload it to TestFlight'
+        required: false
+        default: false
+        type: boolean
+  push:
+    branches: [main, master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event.inputs.create_ipa == 'true' && 'ipa' || 'default' }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
+jobs:
+  # ─── Push-time gate ───────────────────────────────────────────────────────
+  #
+  # Tests and the typechecker run on Linux: they exercise pure TypeScript
+  # (fee engine, profit math, CSV), not native modules, so a macOS runner would
+  # only make them slower.
+  verify:
+    name: Test and typecheck
+    if: github.event_name == 'push' || github.event.inputs.create_ipa != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Unit tests (26 required)
+        run: npm test
+
+      - name: Typecheck
+        run: npm run typecheck
+
+  # ─── Push-time native compile check ──────────────────────────────────────
+  #
+  # Unsigned on purpose: this answers "does the generated native project
+  # compile", and pulling signing credentials in would make a code error and a
+  # certificate problem look identical.
+  simulator:
+    name: Prebuild and compile for iOS Simulator
+    if: github.event_name == 'push' || github.event.inputs.create_ipa != 'true'
+    runs-on: macos-26
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Select Xcode (Swift 6.2+ required by expo-modules-jsi)
+        run: |
+          # expo-modules-jsi declares swift-tools-version 6.2 and compiles its
+          # SwiftPM package during the pod build, so an Xcode with Swift 6.1
+          # fails at package resolution. Prefer the pinned 26.4.1 -- the only
+          # version verified to compile this module -- then any 26.x.
+          pick() {
+            for xc in "$@"; do
+              if [ -d "$xc" ] && sudo xcode-select -s "$xc/Contents/Developer" 2>/dev/null; then
+                echo "Selected: $xc"
+                xcodebuild -version
+                return 0
+              fi
+            done
+            return 1
+          }
+          pick /Applications/Xcode_26.4.1.app || \
+          pick /Applications/Xcode_26.6.app /Applications/Xcode_26.5.app || \
+          pick $(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -Vr)
+          sudo xcodebuild -license accept 2>&1 || true
+          sudo xcodebuild -runFirstLaunch 2>&1 || true
+          xcodebuild -version
+
+      - name: Generate the iOS project (prebuild + pods)
+        run: |
+          npx expo prebuild --platform ios --clean
+          ls -la ios
+
+      - name: Resolve workspace and scheme
+        run: |
+          WORKSPACE=$(ls -d ios/*.xcworkspace | head -1)
+          SCHEME=$(xcodebuild -workspace "$WORKSPACE" -list -json \
+            | python3 -c "import json,sys; d=json.load(sys.stdin)['workspace']; print(d['schemes'][0])")
+          echo "workspace=$WORKSPACE scheme=$SCHEME"
+          echo "WORKSPACE=$WORKSPACE" >> "$GITHUB_ENV"
+          echo "SCHEME=$SCHEME" >> "$GITHUB_ENV"
+
+      - name: Build for Simulator
+        run: |
+          set +e
+          xcodebuild build \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            > build.log 2>&1
+          status=$?
+          set -e
+          if [ $status -ne 0 ]; then
+            echo "::group::errors"
+            grep -nE "error:|error :|fatal" build.log | head -60 || true
+            echo "::endgroup::"
+            echo "::group::last 140 lines"
+            tail -140 build.log
+            echo "::endgroup::"
+            exit $status
+          fi
+
+      - name: Upload logs (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simulator-logs
+          path: build.log
+          retention-days: 7
+
+  # ─── Signed IPA → TestFlight (manual, create_ipa=true) ────────────────────
+  #
+  # Signing is manual for the same reason carryover documents: automatic export
+  # asks App Store Connect for a cloud-managed distribution certificate and an
+  # API-key session is refused (403 / resultCode 7495). The identity and the
+  # profile are written onto the runner instead.
+  archive:
+    name: Archive and upload to TestFlight
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.create_ipa == 'true'
+    runs-on: macos-26
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The gate is repeated here rather than expressed as a dependency: this
+      # job is the only one that produces something uploadable, and a failed
+      # verify on a different commit must never be one ref away from a shipped
+      # build.
+      - name: Unit tests (26 required)
+        run: npm test
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Select Xcode (Swift 6.2+ required by expo-modules-jsi)
+        run: |
+          pick() {
+            for xc in "$@"; do
+              if [ -d "$xc" ] && sudo xcode-select -s "$xc/Contents/Developer" 2>/dev/null; then
+                echo "Selected: $xc"
+                xcodebuild -version
+                return 0
+              fi
+            done
+            return 1
+          }
+          pick /Applications/Xcode_26.4.1.app || \
+          pick /Applications/Xcode_26.6.app /Applications/Xcode_26.5.app || \
+          pick $(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -Vr)
+          sudo xcodebuild -license accept 2>&1 || true
+          sudo xcodebuild -runFirstLaunch 2>&1 || true
+          xcodebuild -version
+
+      - name: Generate the iOS project (prebuild + pods)
+        run: |
+          npx expo prebuild --platform ios --clean
+          ls -la ios
+
+      - name: Resolve workspace and scheme
+        run: |
+          WORKSPACE=$(ls -d ios/*.xcworkspace | head -1)
+          SCHEME=$(xcodebuild -workspace "$WORKSPACE" -list -json \
+            | python3 -c "import json,sys; d=json.load(sys.stdin)['workspace']; print(d['schemes'][0])")
+          echo "workspace=$WORKSPACE scheme=$SCHEME"
+          echo "WORKSPACE=$WORKSPACE" >> "$GITHUB_ENV"
+          echo "SCHEME=$SCHEME" >> "$GITHUB_ENV"
+
+      - name: Import distribution identity
+        env:
+          DIST_CERT_P12: ${{ secrets.DIST_CERT_P12 }}
+          DIST_CERT_PASSWORD: ${{ secrets.DIST_CERT_PASSWORD }}
+          DIST_PROFILE: ${{ secrets.DIST_PROFILE }}
+        run: |
+          set -e
+          if [ -z "$DIST_CERT_P12" ]; then
+            echo "::error::DIST_CERT_P12 is not set -- cannot sign for distribution."
+            exit 1
+          fi
+
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          printf '%s' "$DIST_PROFILE" | base64 --decode \
+            > ~/Library/MobileDevice/Provisioning\ Profiles/boxledger.mobileprovision
+          echo "profile bytes: $(wc -c < ~/Library/MobileDevice/Provisioning\ Profiles/boxledger.mobileprovision)"
+
+          printf '%s' "$DIST_CERT_P12" | base64 --decode > /tmp/dist.p12
+          echo "p12: $(wc -c < /tmp/dist.p12) bytes"
+
+          security create-keychain -p "" build.keychain
+          security set-keychain-settings -lut 3600 build.keychain
+          security unlock-keychain -p "" build.keychain
+          security default-keychain -s build.keychain
+          security list-keychains -d user -s build.keychain $(security list-keychains -d user | tr -d '"')
+
+          # -T plus set-key-partition-list stops macOS putting up a GUI prompt
+          # nobody can answer on a headless runner; without it codesign fails
+          # with errSecInternalComponent several steps later.
+          if ! security import /tmp/dist.p12 -k build.keychain \
+            -P "$DIST_CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security -T /usr/bin/productbuild; then
+            echo "::error::Could not import the distribution p12."
+            exit 1
+          fi
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "" build.keychain > /dev/null
+          rm -f /tmp/dist.p12
+
+          security find-identity -v -p codesigning build.keychain
+          if ! security find-identity -v -p codesigning build.keychain \
+               | grep -q "Apple Distribution"; then
+            echo "::error::No 'Apple Distribution' identity after import."
+            exit 1
+          fi
+
+      - name: Archive
+        env:
+          DIST_PROFILE_SPECIFIER: ${{ secrets.DIST_PROFILE_SPECIFIER }}
+        run: |
+          BUILD_NUM=${{ github.run_number }}
+          echo "Using build number $BUILD_NUM"
+
+          xcodebuild archive \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath BoxLedger.xcarchive \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            PROVISIONING_PROFILE_SPECIFIER="$DIST_PROFILE_SPECIFIER" \
+            DEVELOPMENT_TEAM=H4VQ9X6KYK \
+            CURRENT_PROJECT_VERSION="$BUILD_NUM"
+
+          APP=$(find BoxLedger.xcarchive/Products/Applications -name "*.app" -maxdepth 1 | head -1)
+          echo "app: $APP"
+          codesign -dv --verbose=4 "$APP" 2>&1 \
+            | grep -E "Authority|Identifier|TeamIdentifier" || true
+          if ! codesign -dv --verbose=4 "$APP" 2>&1 \
+               | grep -q "Authority=Apple Distribution"; then
+            echo "::error::Archive is not signed with an Apple Distribution identity."
+            exit 1
+          fi
+
+      - name: Export IPA
+        env:
+          DIST_PROFILE_SPECIFIER: ${{ secrets.DIST_PROFILE_SPECIFIER }}
+        run: |
+          cat > ExportOptions.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>app-store-connect</string>
+            <key>teamID</key>
+            <string>H4VQ9X6KYK</string>
+            <key>signingStyle</key>
+            <string>manual</string>
+            <key>signingCertificate</key>
+            <string>Apple Distribution</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>com.boxledger.app</key>
+              <string>${DIST_PROFILE_SPECIFIER}</string>
+            </dict>
+            <key>uploadToAppStore</key>
+            <false/>
+            <key>stripSwiftSymbols</key>
+            <true/>
+            <key>uploadSymbols</key>
+            <true/>
+            <key>manageAppVersionAndBuildNumber</key>
+            <false/>
+          </dict>
+          </plist>
+          EOF
+
+          set +e
+          xcodebuild -exportArchive \
+            -archivePath BoxLedger.xcarchive \
+            -exportPath ./ipa \
+            -exportOptionsPlist ExportOptions.plist \
+            > export.log 2>&1
+          status=$?
+          set -e
+
+          if [ $status -ne 0 ]; then
+            echo "::group::export errors"
+            grep -nE "error|warning: .*(profile|certificate)" export.log | head -40 || true
+            echo "::endgroup::"
+            echo "::group::what the export was told to do"
+            cat ExportOptions.plist
+            echo "::endgroup::"
+            tail -60 export.log
+            exit $status
+          fi
+          tail -20 export.log
+          ls -la ipa/
+
+      - name: Upload IPA as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: boxledger-ipa
+          path: ipa/*.ipa
+          retention-days: 30
+
+      - name: Upload to TestFlight
+        env:
+          APPSTORE_KEY_ID: ${{ secrets.APPSTORE_KEY_ID }}
+          APPSTORE_ISSUER_ID: ${{ secrets.APPSTORE_ISSUER_ID }}
+          APPSTORE_API_KEY: ${{ secrets.APPSTORE_API_KEY }}
+        run: |
+          mkdir -p ~/private_keys
+          printf '%s' "$APPSTORE_API_KEY" > ~/private_keys/AuthKey_${APPSTORE_KEY_ID}.p8
+          IPA=$(ls ipa/*.ipa | head -1)
+          echo "uploading $IPA"
+          xcrun altool --upload-app \
+            -f "$IPA" \
+            --apiKey "$APPSTORE_KEY_ID" \
+            --apiIssuer "$APPSTORE_ISSUER_ID" \
+            --type ios \
+            --verbose 2>&1
