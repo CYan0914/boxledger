@@ -80,6 +80,17 @@ export function SettingsScreen({ onOpenPaywall }: { onOpenPaywall: () => void })
     await shareCsv(csv, `boxledger-tax-${stamp}.csv`);
   }
 
+  async function restorePurchases() {
+    const entitled = await store.restorePro();
+    if (entitled === true) {
+      Alert.alert('Purchases restored', 'BoxLedger Pro is active on this Apple ID.');
+    } else if (entitled === false) {
+      Alert.alert('Nothing to restore', 'This Apple ID has no BoxLedger purchase.');
+    } else {
+      Alert.alert('Could not reach the App Store', 'Check your connection and try again.');
+    }
+  }
+
   function confirmReset() {
     Alert.alert(
       'Delete everything?',
@@ -305,24 +316,23 @@ export function SettingsScreen({ onOpenPaywall }: { onOpenPaywall: () => void })
           <View style={styles.switchRow}>
             <View style={{ flex: 1 }}>
               <Text style={styles.switchLabel}>
-                {store.settings.isPro ? 'Paid tier (placeholder)' : 'Free tier'}
+                {store.settings.isPro ? 'BoxLedger Pro' : 'Free tier'}
               </Text>
               <Text style={styles.switchHint}>
-                {store.items.length} of {store.settings.freeItemLimit} item slots used. Payments are
-                not implemented in this build; this switch stands in for StoreKit.
+                {store.settings.isPro
+                  ? 'Unlimited items and CSV export are unlocked on this Apple ID.'
+                  : `${store.items.length} of ${store.settings.freeItemLimit} item slots used. Pro lifts the cap and unlocks CSV export.`}
               </Text>
             </View>
-            <Switch
-              value={store.settings.isPro}
-              onValueChange={(value) =>
-                store.saveSettings({ ...store.settings, isPro: value })
-              }
-            />
           </View>
           <Divider />
-          <Text style={styles.prices}>$39 one-time · $4.99/month</Text>
           <Pressable onPress={onOpenPaywall} style={styles.linkRow}>
-            <Text style={styles.link}>Open the paywall</Text>
+            <Text style={styles.link}>
+              {store.settings.isPro ? 'Manage your plan' : 'Upgrade to Pro'}
+            </Text>
+          </Pressable>
+          <Pressable onPress={restorePurchases} style={styles.linkRow}>
+            <Text style={styles.link}>Restore purchases</Text>
           </Pressable>
         </Card>
       </View>

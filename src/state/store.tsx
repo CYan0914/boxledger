@@ -3,8 +3,17 @@ import { canAddItem, makeItem, applyListing, applySale, type Storage } from '../
 import { getStorage } from '../data/db';
 import type { Item, NewItemInput, SaleInput, Settings } from '../domain/types';
 import type { PlatformFeeConfig } from '../domain/fees';
+import type { ProPlan } from '../domain/entitlement';
 import { computeProfit, recordedProfit } from '../domain/profit';
 import { isStale, monthKey } from '../domain/dates';
+import {
+  currentEntitlement,
+  fetchProOffers,
+  purchasePro,
+  restoreEntitlement,
+  type ProOffer,
+  type PurchaseOutcome,
+} from '../services/purchases';
 
 export interface AddResult {
   ok: boolean;
@@ -21,6 +30,8 @@ interface StoreValue {
   inventoryCostCents: number;
   monthProfitCents: number;
   staleItems: Item[];
+  proOffers: ProOffer[];
+  offersLoading: boolean;
   addItem(input: NewItemInput): Promise<AddResult>;
   updateItem(item: Item): Promise<void>;
   deleteItem(id: string): Promise<void>;
@@ -28,6 +39,9 @@ interface StoreValue {
   markSold(id: string, sale: SaleInput): Promise<void>;
   saveSettings(next: Settings): Promise<void>;
   saveConfigs(next: PlatformFeeConfig[]): Promise<void>;
+  loadOffers(): Promise<void>;
+  buyPro(plan: ProPlan): Promise<PurchaseOutcome>;
+  restorePro(): Promise<boolean | null>;
   resetAll(): Promise<void>;
 }
 
@@ -44,6 +58,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     isPro: false,
   });
   const [configs, setConfigs] = useState<PlatformFeeConfig[]>([]);
+  const [proOffers, setProOffers] = useState<ProOffer[]>([]);
+  const [offersLoading, setOffersLoading] = useState(false);
 
   const refresh = useCallback(async () => {
     const [loadedItems, loadedSettings, loadedConfigs] = await Promise.all([
@@ -57,9 +73,57 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     setReady(true);
   }, [storage]);
 
+  /**
+   * Write the entitlement through the storage layer rather than through a
+   * captured `settings` value: the StoreKit callback can land long after the
+   * render that started the purchase, and a stale copy would resurrect a
+   * cleared flag.
+   */
+  const setPro = useCallback(
+    async (value: boolean) => {
+      const current = await storage.loadSettings();
+      if (current.isPro === value) return;
+      const next = { ...current, isPro: value };
+      await storage.saveSettings(next);
+      setSettings(next);
+    },
+    [storage]
+  );
+
   useEffect(() => {
-    refresh().catch(() => setReady(true));
-  }, [refresh]);
+    refresh()
+      .then(async () => {
+        // StoreKit is the source of truth. null means "could not ask", and an
+        // unasked question must not revoke anything.
+        const entitled = await currentEntitlement();
+        if (entitled !== null) await setPro(entitled);
+      })
+      .catch(() => setReady(true));
+  }, [refresh, setPro]);
+
+  const loadOffers = useCallback(async () => {
+    setOffersLoading(true);
+    try {
+      setProOffers(await fetchProOffers());
+    } finally {
+      setOffersLoading(false);
+    }
+  }, []);
+
+  const buyPro = useCallback(
+    async (plan: ProPlan): Promise<PurchaseOutcome> => {
+      const outcome = await purchasePro(plan);
+      if (outcome.status === 'purchased') await setPro(true);
+      return outcome;
+    },
+    [setPro]
+  );
+
+  const restorePro = useCallback(async (): Promise<boolean | null> => {
+    const entitled = await restoreEntitlement();
+    if (entitled !== null) await setPro(entitled);
+    return entitled;
+  }, [setPro]);
 
   const addItem = useCallback(
     async (input: NewItemInput): Promise<AddResult> => {
@@ -158,6 +222,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     settings,
     configs,
     ...derived,
+    proOffers,
+    offersLoading,
     addItem,
     updateItem,
     deleteItem,
@@ -165,6 +231,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     markSold,
     saveSettings,
     saveConfigs,
+    loadOffers,
+    buyPro,
+    restorePro,
     resetAll,
   };
 
