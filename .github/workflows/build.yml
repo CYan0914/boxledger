@@ -107,6 +107,13 @@ jobs:
           node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('app.json','utf8'));p.expo.ios.buildNumber=String(process.env.GITHUB_RUN_NUMBER||'1');fs.writeFileSync('app.json',JSON.stringify(p,null,2)+'\n');console.log('ios.buildNumber ->',p.expo.ios.buildNumber)"
           npx expo prebuild --platform ios --clean
           ls -la ios
+          # expo prebuild exits 0 even when the pod install inside it fails,
+          # and the next step then fails on a missing workspace with no hint
+          # about why. Fail here, next to the pod log.
+          if ! ls ios/*.xcworkspace >/dev/null 2>&1; then
+            echo "::error::prebuild produced no .xcworkspace -- pod install failed above"
+            exit 1
+          fi
 
       - name: Resolve workspace and scheme
         run: |
@@ -239,6 +246,13 @@ jobs:
           node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('app.json','utf8'));p.expo.ios.buildNumber=String(process.env.GITHUB_RUN_NUMBER||'1');fs.writeFileSync('app.json',JSON.stringify(p,null,2)+'\n');console.log('ios.buildNumber ->',p.expo.ios.buildNumber)"
           npx expo prebuild --platform ios --clean
           ls -la ios
+          # expo prebuild exits 0 even when the pod install inside it fails,
+          # and the next step then fails on a missing workspace with no hint
+          # about why. Fail here, next to the pod log.
+          if ! ls ios/*.xcworkspace >/dev/null 2>&1; then
+            echo "::error::prebuild produced no .xcworkspace -- pod install failed above"
+            exit 1
+          fi
 
       - name: Resolve workspace and scheme
         run: |

@@ -41,8 +41,8 @@ module.exports = function withIosSigning(config) {
       if (!isOurTarget) continue;
 
       settings.CODE_SIGN_STYLE = 'Manual';
-      settings.CODE_SIGN_IDENTITY = 'Apple Distribution';
-      settings.PROVISIONING_PROFILE_SPECIFIER = profile;
+      settings.CODE_SIGN_IDENTITY = '"Apple Distribution"';
+      settings.PROVISIONING_PROFILE_SPECIFIER = `"${profile}"`;
       settings.DEVELOPMENT_TEAM = TEAM_ID;
       patched += 1;
     }
