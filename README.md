@@ -80,7 +80,8 @@ src/domain/fees.ts      editable fee configs + calculation (whole / marginal)
 src/domain/profit.ts    real profit = sale − fees − shipping − cost − tax reserve
 src/domain/format.ts    money and percent parsing
 src/domain/platforms.ts platform labels
-tests/fees.test.ts      26 tests
+tests/fees.test.ts      26 fee/profit/CSV tests
+tests/entitlement.test.ts  8 entitlement tests
 ```
 
 The engine supports both rule shapes the marketplaces actually use:
@@ -155,7 +156,7 @@ npx expo start --web    # browser preview (localStorage adapter)
 Checks:
 
 ```bash
-npm test         # 26 tests
+npm test         # 34 tests
 npm run typecheck
 ```
 
@@ -196,15 +197,41 @@ Signing inputs (GitHub repository secrets, never in git):
 | `APPSTORE_KEY_ID` / `APPSTORE_ISSUER_ID` / `APPSTORE_API_KEY` | App Store Connect API key |
 
 The App Store Connect app record itself cannot be created through the API;
-create it once in the web UI (My Apps → + → New App, name **BoxLedger**, bundle
-id `com.boxledger.app`, SKU `boxledger-ios-001`). Uploads fail until it exists.
+create it once in the web UI (My Apps → + → New App). Uploads fail until it
+exists.
+
+---
+
+## Payments and the App Store listing
+
+Payments are StoreKit 2 through `expo-iap`. There is no server and no
+third-party purchase SDK:
+
+- `src/domain/entitlement.ts` — product ids and the rule that decides whether a
+  purchase unlocks Pro. Pure functions, covered by 8 tests.
+- `src/services/purchases.ts` — connection, product fetch, purchase, restore,
+  and the current-entitlement read. StoreKit is the source of truth; the local
+  `isPro` flag is a cache written from it.
+- Products: `com.boxledger.app.pro.monthly` (auto-renewable, $4.99/month) and
+  `com.boxledger.app.pro.lifetime` (non-consumable, $39). Both must exist in App
+  Store Connect and be at least *Ready to Submit* before the paywall can load
+  them in a sandbox build.
+- The paywall shows the store's localized prices, the auto-renewal disclosure,
+  Terms of Use (EULA), Privacy Policy, and Restore Purchases. App Review rejects
+  a placeholder unlock, so there is none.
+
+Store listing assets:
+
+- Screenshots: 1290×2796 (APP_IPHONE_67), stored in `.gstack/shots/store-*.png`
+  locally and uploaded to App Store Connect.
+- Privacy policy: https://cyan0914.github.io/boxledger/privacy.html
+- Support: https://cyan0914.github.io/boxledger/support.html
+- Subtitle: `Reseller inventory & profit`
 
 ---
 
 ## Not built yet
 
-- **Payments.** The paywall and the paid flag exist; StoreKit / Play Billing
-  are not wired. The unlock button is labelled as a placeholder.
 - **Cross-listing / marketplace sync.** Explicitly out of scope.
 - **Accounts, cloud sync, social, AI pricing, web app.** Out of scope.
 - **Bulk import.** Not in the spec; not built.

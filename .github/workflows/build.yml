@@ -46,7 +46,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Unit tests (26 required)
+      - name: Unit tests
         run: npm test
 
       - name: Typecheck
@@ -201,7 +201,7 @@ jobs:
       # job is the only one that produces something uploadable, and a failed
       # verify on a different commit must never be one ref away from a shipped
       # build.
-      - name: Unit tests (26 required)
+      - name: Unit tests
         run: npm test
 
       - name: Typecheck
