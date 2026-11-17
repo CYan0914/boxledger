@@ -227,6 +227,10 @@ jobs:
           xcodebuild -version
 
       - name: Generate the iOS project (prebuild + pods)
+        env:
+          # Read by plugins/withIosSigning.js to put the profile on the app
+          # target. Never in git; the plugin no-ops when it is absent.
+          DIST_PROFILE_SPECIFIER: ${{ secrets.DIST_PROFILE_SPECIFIER }}
         run: |
           # Stamp the build number into app.json before prebuild. Expo writes
           # CFBundleVersion as a literal value, so passing CURRENT_PROJECT_VERSION
@@ -307,22 +311,21 @@ jobs:
           fi
 
       - name: Archive
-        env:
-          DIST_PROFILE_SPECIFIER: ${{ secrets.DIST_PROFILE_SPECIFIER }}
         run: |
           BUILD_NUM=${{ github.run_number }}
           echo "Using build number $BUILD_NUM"
 
+          # No signing flags here on purpose. A command-line
+          # PROVISIONING_PROFILE_SPECIFIER lands on every target in the
+          # workspace, including expo-iap's OpenIAP Swift package, which cannot
+          # carry a profile and fails the archive. The app target's signing is
+          # written by plugins/withIosSigning.js during prebuild instead.
           xcodebuild archive \
             -workspace "$WORKSPACE" \
             -scheme "$SCHEME" \
             -configuration Release \
             -sdk iphoneos \
             -archivePath BoxLedger.xcarchive \
-            CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY="Apple Distribution" \
-            PROVISIONING_PROFILE_SPECIFIER="$DIST_PROFILE_SPECIFIER" \
-            DEVELOPMENT_TEAM=H4VQ9X6KYK \
             CURRENT_PROJECT_VERSION="$BUILD_NUM"
 
           if [ ! -d BoxLedger.xcarchive/Products/Applications ]; then
