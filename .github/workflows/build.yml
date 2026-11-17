@@ -105,10 +105,25 @@ jobs:
 
       - name: Resolve workspace and scheme
         run: |
+          # Not schemes[0]: CocoaPods adds aggregate schemes ("boost",
+          # "Pods-...") and they come back first. Archiving one of those
+          # reports ** ARCHIVE SUCCEEDED ** while producing no .app, which is
+          # exactly how a signed run can look green right up to export.
           WORKSPACE=$(ls -d ios/*.xcworkspace | head -1)
-          SCHEME=$(xcodebuild -workspace "$WORKSPACE" -list -json \
-            | python3 -c "import json,sys; d=json.load(sys.stdin)['workspace']; print(d['schemes'][0])")
-          echo "workspace=$WORKSPACE scheme=$SCHEME"
+          PROJECT_NAME=$(basename "$(ls -d ios/*.xcodeproj | head -1)" .xcodeproj)
+          SCHEMES=$(xcodebuild -workspace "$WORKSPACE" -list -json \
+            | python3 -c "import json,sys; print('\n'.join(json.load(sys.stdin)['workspace']['schemes']))")
+          echo "available schemes:"
+          echo "$SCHEMES"
+          SCHEME=$(echo "$SCHEMES" | grep -x "$PROJECT_NAME" || true)
+          if [ -z "$SCHEME" ]; then
+            SCHEME=$(echo "$SCHEMES" | grep -vE '^(Pods-|boost$|ReactNativeDependencies)' | head -1)
+          fi
+          if [ -z "$SCHEME" ]; then
+            echo "::error::no app scheme found in $WORKSPACE"
+            exit 1
+          fi
+          echo "workspace=$WORKSPACE project=$PROJECT_NAME scheme=$SCHEME"
           echo "WORKSPACE=$WORKSPACE" >> "$GITHUB_ENV"
           echo "SCHEME=$SCHEME" >> "$GITHUB_ENV"
 
@@ -121,6 +136,7 @@ jobs:
             -configuration Debug \
             -sdk iphonesimulator \
             -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
@@ -135,6 +151,13 @@ jobs:
             tail -140 build.log
             echo "::endgroup::"
             exit $status
+          fi
+          # A scheme that builds only a dependency also exits 0. The .app is
+          # the thing being checked for.
+          find build/Build/Products -maxdepth 3 -name "*.app" | head -5
+          if [ -z "$(find build/Build/Products -maxdepth 3 -name "*.app" | head -1)" ]; then
+            echo "::error::no .app produced -- wrong scheme?"
+            exit 1
           fi
 
       - name: Upload logs (on failure)
@@ -205,10 +228,25 @@ jobs:
 
       - name: Resolve workspace and scheme
         run: |
+          # Not schemes[0]: CocoaPods adds aggregate schemes ("boost",
+          # "Pods-...") and they come back first. Archiving one of those
+          # reports ** ARCHIVE SUCCEEDED ** while producing no .app, which is
+          # exactly how a signed run can look green right up to export.
           WORKSPACE=$(ls -d ios/*.xcworkspace | head -1)
-          SCHEME=$(xcodebuild -workspace "$WORKSPACE" -list -json \
-            | python3 -c "import json,sys; d=json.load(sys.stdin)['workspace']; print(d['schemes'][0])")
-          echo "workspace=$WORKSPACE scheme=$SCHEME"
+          PROJECT_NAME=$(basename "$(ls -d ios/*.xcodeproj | head -1)" .xcodeproj)
+          SCHEMES=$(xcodebuild -workspace "$WORKSPACE" -list -json \
+            | python3 -c "import json,sys; print('\n'.join(json.load(sys.stdin)['workspace']['schemes']))")
+          echo "available schemes:"
+          echo "$SCHEMES"
+          SCHEME=$(echo "$SCHEMES" | grep -x "$PROJECT_NAME" || true)
+          if [ -z "$SCHEME" ]; then
+            SCHEME=$(echo "$SCHEMES" | grep -vE '^(Pods-|boost$|ReactNativeDependencies)' | head -1)
+          fi
+          if [ -z "$SCHEME" ]; then
+            echo "::error::no app scheme found in $WORKSPACE"
+            exit 1
+          fi
+          echo "workspace=$WORKSPACE project=$PROJECT_NAME scheme=$SCHEME"
           echo "WORKSPACE=$WORKSPACE" >> "$GITHUB_ENV"
           echo "SCHEME=$SCHEME" >> "$GITHUB_ENV"
 
@@ -276,6 +314,12 @@ jobs:
             PROVISIONING_PROFILE_SPECIFIER="$DIST_PROFILE_SPECIFIER" \
             DEVELOPMENT_TEAM=H4VQ9X6KYK \
             CURRENT_PROJECT_VERSION="$BUILD_NUM"
+
+          if [ ! -d BoxLedger.xcarchive/Products/Applications ]; then
+            echo "::error::archive has no Products/Applications -- likely the wrong scheme"
+            find BoxLedger.xcarchive -maxdepth 3 | head -40
+            exit 1
+          fi
 
           APP=$(find BoxLedger.xcarchive/Products/Applications -name "*.app" -maxdepth 1 | head -1)
           echo "app: $APP"
