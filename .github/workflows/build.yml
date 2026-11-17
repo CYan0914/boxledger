@@ -100,6 +100,11 @@ jobs:
 
       - name: Generate the iOS project (prebuild + pods)
         run: |
+          # Stamp the build number into app.json before prebuild. Expo writes
+          # CFBundleVersion as a literal value, so passing CURRENT_PROJECT_VERSION
+          # to xcodebuild does nothing -- the first upload went up as build 1
+          # while the log said 8. app.json is the only input prebuild reads.
+          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('app.json','utf8'));p.expo.ios.buildNumber=String(process.env.GITHUB_RUN_NUMBER||'1');fs.writeFileSync('app.json',JSON.stringify(p,null,2)+'\n');console.log('ios.buildNumber ->',p.expo.ios.buildNumber)"
           npx expo prebuild --platform ios --clean
           ls -la ios
 
@@ -223,6 +228,11 @@ jobs:
 
       - name: Generate the iOS project (prebuild + pods)
         run: |
+          # Stamp the build number into app.json before prebuild. Expo writes
+          # CFBundleVersion as a literal value, so passing CURRENT_PROJECT_VERSION
+          # to xcodebuild does nothing -- the first upload went up as build 1
+          # while the log said 8. app.json is the only input prebuild reads.
+          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('app.json','utf8'));p.expo.ios.buildNumber=String(process.env.GITHUB_RUN_NUMBER||'1');fs.writeFileSync('app.json',JSON.stringify(p,null,2)+'\n');console.log('ios.buildNumber ->',p.expo.ios.buildNumber)"
           npx expo prebuild --platform ios --clean
           ls -la ios
 
@@ -323,6 +333,17 @@ jobs:
 
           APP=$(find BoxLedger.xcarchive/Products/Applications -name "*.app" -maxdepth 1 | head -1)
           echo "app: $APP"
+
+          # Read the version back off the built bundle. The first upload
+          # carried build 1 even though the log said 8, and App Store Connect
+          # rejects a re-upload of the same build number.
+          BUNDLE_VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP/Info.plist")
+          echo "CFBundleVersion=$BUNDLE_VERSION (expected $BUILD_NUM)"
+          if [ "$BUNDLE_VERSION" != "$BUILD_NUM" ]; then
+            echo "::error::CFBundleVersion is $BUNDLE_VERSION, expected $BUILD_NUM"
+            exit 1
+          fi
+
           codesign -dv --verbose=4 "$APP" 2>&1 \
             | grep -E "Authority|Identifier|TeamIdentifier" || true
           if ! codesign -dv --verbose=4 "$APP" 2>&1 \
